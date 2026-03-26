@@ -137,6 +137,16 @@ What changes:
 - Multiple composed constraints (load + noise + turbine-specific)
 - Different load surrogate models (analytical, learned, hybrid)
 
+## Future Direction: Sim-to-Real via Energy Composition
+
+The classifier guidance mechanism used for safety composition is general — it works with any differentiable correction term. This opens a potential path for sim-to-real transfer: train a base policy in simulation, then compose a learned residual correction from real operational (SCADA) data at deployment.
+
+```
+E_deployed(s,a) = E_sim(s,a) + E_correction(s,a)
+```
+
+The correction network would be small (it only models the sim-to-real gap, not the full policy) and could be updated online as more data arrives. This could address multiple types of distribution shift — turbine type mismatch, flow model inaccuracies, terrain effects — through the same composition mechanism. Worth exploring once the core safety composition (Phase 2) is validated.
+
 ## Open Questions
 
 - **Load surrogate**: What load surrogates are available? Do they have useful gradients? If not, can we fit a small neural net surrogate?
