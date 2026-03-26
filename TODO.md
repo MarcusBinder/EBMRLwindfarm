@@ -1,46 +1,52 @@
 # TODO — EBM + RL + Transformers
 
-## Literature & Exploration (Start Here)
-- [ ] Read Soft Q-Learning paper (Haarnoja 2017) — understand the SAC→EBM connection
-- [ ] Read Diffusion Policy paper (Chi et al. 2023) — understand state-of-the-art diffusion policy
-- [ ] Read IBC paper (Florence et al. 2021) — understand EBM policy training challenges
-- [ ] Read Compositional EBM paper (Du et al. 2020) — understand energy compositionality
-- [ ] Run existing SAC baseline on 2-3 layouts, record performance for comparison
-- [ ] Build a tiny synthetic "wind farm" (3 turbines, simple wake model) for rapid EBM prototyping
-- [ ] Prototype: minimal EBM energy head on existing transformer (even if broken, builds intuition)
-- [ ] Decide primary research direction after reading phase
+## Literature (reference, not blocking)
+- [ ] Read Soft Q-Learning paper (Haarnoja 2017) — the SAC→EBM connection
+- [ ] Read Diffusion-QL paper (Wang et al. 2022) — diffusion actor in actor-critic framework
+- [ ] Read Consistency Policy paper (Chen et al. 2024) — single-step diffusion inference
+- [ ] Read Compositional EBM paper (Du et al. 2020) — energy compositionality theory
 
-## Setup
+## Phase 0: Baseline & Infrastructure
+- [ ] Train existing SAC baseline on 2-3 layouts, save checkpoints + power metrics
+- [ ] Evaluate SAC baseline on held-out OOD layouts, record generalization curves
+- [ ] Wrap load surrogate as differentiable PyTorch module (input: state+action, output: scalar load estimate)
+- [ ] Build tiny synthetic env (3 turbines, simple wake model) for rapid diffusion actor iteration
+- [ ] Update requirements.txt for diffusion dependencies (if needed)
+
+## Phase 1: Diffusion Actor
+- [ ] Implement diffusion denoising network (MLP conditioned on transformer embeddings + timestep)
+- [ ] Implement forward diffusion process (noise schedule, DDPM/DDIM)
+- [ ] Implement Diffusion-QL training objective (diffusion loss + Q-value guidance)
+- [ ] Integrate with existing transformer encoder + critic (actor replacement only)
+- [ ] Train on synthetic env first, then real layouts
+- [ ] Compare power performance: diffusion actor vs. SAC Gaussian actor
+
+## Phase 2: Safety Composition (headline result)
+- [ ] Implement classifier guidance: add load surrogate gradient to denoising steps
+- [ ] Evaluate power-vs-load tradeoff curves at varying λ (guidance strength)
+- [ ] Baseline comparisons:
+  - [ ] No constraint (diffusion actor, power only)
+  - [ ] Composed constraint (ours — load surrogate as guidance, no retraining)
+  - [ ] Retrained constrained SAC (Lagrangian, retrained per constraint level)
+  - [ ] Post-hoc action clipping (naive baseline)
+- [ ] Test with different load surrogates (if multiple available)
+- [ ] Visualize: energy landscape with and without load guidance
+
+## Phase 3: OOD Generalization
+- [ ] Define OOD layout test suite (varying turbine count, spacing, topology)
+- [ ] Evaluate diffusion policy vs. SAC on OOD layouts
+- [ ] Test safety composition on OOD layouts — does guidance still work?
+- [ ] Ablation: is improved OOD from diffusion actor, transformer, or both?
+
+## Phase 4: Extensions
+- [ ] Consistency distillation for single-step inference (if inference speed is a bottleneck)
+- [ ] Multiple composed constraints (load + noise + per-turbine limits)
+- [ ] Visualize energy landscapes for interpretability
+
+## Setup (done)
 - [x] Spring cleaning: remove old notebooks, archive, edge scripts
 - [x] Update README for new direction
 - [x] Create CLAUDE.md, CONTEXT.md, TODO.md
 - [x] Update .gitignore
 - [x] Create papers/PAPERS.md — curated literature review
-- [ ] Update requirements.txt for EBM dependencies (if needed)
-
-## Near-Term Research
-- [ ] Implement basic energy network E(s, a) using existing transformer backbone
-- [ ] Implement Langevin dynamics action sampler
-- [ ] Add contrastive training loss (noise contrastive estimation or InfoNCE)
-- [ ] Baseline comparison: standard SAC vs. EBM-based policy on single layout
-- [ ] Evaluate multimodality of learned energy landscape
-
-## Architecture
-- [ ] Design EBM head architecture (how to merge state and action for scalar energy output)
-- [ ] Decide: replace critic, replace actor, or add alongside existing SAC
-- [ ] Explore amortized action generation (learned sampler network)
-
-## Experiments
-- [ ] Single layout: EBM policy vs. SAC policy (power, convergence, stability)
-- [ ] Multi-layout generalization: does energy landscape transfer better?
-- [ ] Compositional objectives: separate power/load/wake energy terms
-- [ ] Test-time objective rebalancing: change λ weights without retraining
-- [ ] Visualize energy landscapes for interpretability
-
-## Ideas to Explore
-- [ ] Diffusion policy as alternative to Langevin sampling
-- [ ] Consistency models for single-step inference (real-time control)
-- [ ] Score matching vs. contrastive divergence for training
-- [ ] EBM for world model (predict next state energy)
-- [ ] Combine EBM uncertainty with exploration bonus
-- [ ] Classifier guidance on diffusion policy for compositional objectives
+- [x] Decide primary research direction

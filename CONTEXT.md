@@ -50,53 +50,97 @@ What SAC lost: multimodal action distributions, explicit energy landscape, compo
 
 **Our research isn't "applying EBMs to a new domain" — it's completing the circle.** We're making the implicit EBM structure in SAC explicit again, and leveraging EBM-specific properties (compositionality, energy landscapes, multimodality) that SAC's Gaussian approximation discards.
 
-## Research Directions
+## Research Thesis
 
-### Direction A: Diffusion Policy with Transformer Backbone
+**Energy-based policies for wind farm control enable (1) post-hoc safety composition via external load surrogates and (2) better OOD layout generalization — without retraining.**
 
-Replace the Gaussian actor with diffusion-based action generation. The existing transformer encoder becomes the denoising backbone, conditioning on turbine observations to iteratively refine noisy yaw actions into optimal configurations.
+We train a diffusion-based policy (replacing SAC's Gaussian actor) on power maximization across diverse layouts. At deployment, operators can plug in any differentiable constraint — load surrogates, noise limits, turbine-specific maintenance constraints — as an additional energy term. The policy respects the new constraint immediately, without retraining.
 
-- **Approach**: Conditional denoising diffusion process (DDPM/DDIM) over per-turbine yaw actions, conditioned on transformer-encoded turbine states.
-- **Why it fits**: Diffusion handles multimodal action distributions naturally — multiple valid yaw configurations for a given wind condition. The iterative refinement process is analogous to Langevin dynamics on an energy landscape.
-- **Prior art**: Chi et al. (2023) Diffusion Policy; Wang et al. (2023) Diffusion-QL; Chen et al. (2024) Consistency Policy for real-time inference.
-- **Novelty**: No prior work applies diffusion policies to variable-size turbine sequences with layout generalization. The "turbines as tokens" architecture makes diffusion conditioning particularly natural — each token's action is denoised in context of all other turbines.
-- **Risk**: Inference speed. Diffusion requires multiple denoising steps. Consistency models (Chen et al. 2024) offer 45x speedup via single-step inference — a critical mitigation for real-time control.
+### Why This Matters
 
-### Direction B: Compositional Energy Objectives
-
-Learn separate energy terms for different objectives: E_power(s,a), E_fatigue(s,a), E_wake(s,a). Compose them by addition:
+Standard RL approaches bake objectives into the reward function at training time. If an operator wants to limit fatigue loads during a storm, prioritize a specific turbine near end-of-life, or satisfy a new noise regulation — they retrain. With energy-based policies, these constraints compose at deployment:
 
 ```
-E_total(s,a) = E_power(s,a) + λ₁·E_fatigue(s,a) + λ₂·E_wake(s,a)
+E_total(s,a) = E_policy(s,a) + λ · L(s,a)
+                                ↑
+              load surrogate, noise model, or any differentiable constraint
+              added at deployment — never seen during training
 ```
 
-- **Approach**: Train independent energy networks for each objective using contrastive divergence or noise contrastive estimation. Actions are derived by minimizing the composed energy via Langevin dynamics or an amortized sampler.
-- **Why it fits**: Wind farms have natural compositional structure — power maximization, structural fatigue, wake interactions, and turbulence are genuinely separate physical phenomena. Changing λ weights at deployment lets operators rebalance objectives (e.g., prioritize load reduction during storms) *without retraining*.
-- **Prior art**: Du et al. (2020) compose energy functions for multi-concept image generation; Liu et al. (2022) extend this to diffusion models.
-- **Novelty**: This is a domain where EBM compositionality genuinely matters, not just a toy demo. Wind farm operators need to adjust objective tradeoffs based on real-time conditions (wind speed, grid demand, maintenance schedules). No current RL approach offers test-time objective rebalancing.
-- **Risk**: Training stability. Multiple energy networks must be calibrated to similar scales. May need careful normalization or joint training with shared representations.
+This is possible because action generation in energy-based policies involves *sampling from an energy landscape* (via diffusion denoising or Langevin dynamics). Reshaping that landscape at test time reshapes the actions.
 
-### Direction C: Energy Landscape for Layout Transfer
+### Two Research Questions
 
-Learn an energy function E(s,a) that captures the landscape of good yaw configurations. Hypothesis: energy landscapes transfer better than explicit policies across farm layouts, because they encode "what's good" (low energy = high power) rather than "what to do" (specific yaw angles).
+**RQ1 — Post-hoc safety composition:** Can a diffusion policy trained only on power maximization respect load constraints at deployment by composing a load surrogate as classifier guidance during action generation?
 
-- **Approach**: Train E_θ(s,a) on diverse layouts. At test time on an unseen layout, derive actions via energy minimization. The energy landscape should capture wind-physics invariants (wake deflection angles, turbine spacing effects) that generalize.
-- **Why it fits**: Layout generalization is the existing codebase's core strength (transformer + positional encodings enable zero-shot transfer). The question is whether EBM formulation *improves* transfer, since energy functions define a landscape of relative quality rather than committing to specific action mappings.
-- **Prior art**: Cao et al. (2023) show energy-based regularization improves OOD generalization in offline RL.
-- **Novelty**: Testing whether energy landscapes are more layout-invariant than explicit policies. If true, this would be a significant result for the "turbines as tokens" approach.
-- **Risk**: May not provide measurable improvement over standard SAC if the transformer already captures sufficient layout invariance. Need careful experimental design to isolate the EBM contribution.
+- Evaluation: power-vs-load tradeoff curves at varying λ. Compare against constrained SAC (retrained per constraint) and post-hoc action clipping.
+- The key result: comparable safety with zero retraining cost.
 
-### Recommended Priority
+**RQ2 — OOD layout generalization:** Does the energy-based formulation improve zero-shot transfer to unseen farm layouts compared to standard SAC?
 
-**Direction B (Compositional Energy) is the strongest angle.** "Diffusion policy for wind farms" is solid but incremental. "Compositional energy objectives with test-time rebalancing" is a genuinely new capability that EBMs uniquely enable and wind farms uniquely need. Direction A could serve as a stepping stone (diffusion is better understood than raw EBM training), and Direction C provides the evaluation story.
+- Hypothesis: energy landscapes encode "what's good" (relative quality) rather than "what to do" (absolute actions), which may transfer better.
+- Evaluation: performance degradation curves on held-out layouts at increasing distance from training distribution.
+- Supporting result for RQ1 — if the policy also generalizes better, the safety composition works on unseen layouts too.
 
-A practical path: start with Direction A (diffusion actor, proves the denoising architecture works), then extend to Direction B (compositional energy terms within the diffusion framework via classifier guidance).
+## Implementation Architecture
+
+The change to the existing codebase is surgical — only the actor is replaced:
+
+```
+EXISTING (SAC):
+  Transformer encoder → per-turbine embeddings → MLP actor head → Gaussian(μ, σ) → yaw actions
+
+PROPOSED (Diffusion actor):
+  Transformer encoder → per-turbine embeddings → Diffusion denoiser(noisy_a, t, embedding) → yaw actions
+                                                  ↑
+                                                  At deployment, add: - λ·∇_a L(s, a_t) to each denoising step
+```
+
+What stays the same:
+- Transformer encoder backbone (turbines as tokens)
+- All positional/profile encodings
+- Critic network (Q-function guides diffusion via Diffusion-QL objective)
+- Replay buffer, multi-layout training, wind-relative frame
+
+What changes:
+- Actor: Gaussian head → diffusion denoising network (small MLP per turbine, conditioned on transformer embeddings + diffusion timestep)
+- Action generation: single forward pass → K denoising steps (mitigated later by consistency distillation)
+- Safety composition: at deployment, classifier guidance from load surrogate modifies denoising
+
+## Implementation Phases
+
+### Phase 0: Baseline & Infrastructure
+- Train existing SAC on 2-3 layouts, record power metrics
+- Evaluate on held-out OOD layouts to establish generalization baseline
+- Wrap a load surrogate as a differentiable PyTorch module
+- Build a tiny synthetic environment (3 turbines, simple wake) for rapid iteration
+
+### Phase 1: Diffusion Actor
+- Replace Gaussian actor head with diffusion denoising network
+- Integrate with SAC critic via Diffusion-QL training objective
+- Train on same layouts as baseline
+- Target: match or approach SAC power performance
+
+### Phase 2: Safety Composition
+- Add classifier guidance from load surrogate during inference
+- Evaluate power-vs-load tradeoff at varying λ
+- Compare: (a) no constraint, (b) composed constraint (ours), (c) retrained constrained SAC, (d) post-hoc action clipping
+- This is the headline result
+
+### Phase 3: OOD Generalization
+- Evaluate diffusion policy on held-out layouts
+- Compare generalization curves: SAC vs. diffusion policy
+- Test safety composition on OOD layouts — does it still work?
+
+### Phase 4: Extensions (if results are positive)
+- Consistency distillation for single-step inference (Chen et al. 2024)
+- Multiple composed constraints (load + noise + turbine-specific)
+- Different load surrogate models (analytical, learned, hybrid)
 
 ## Open Questions
 
-- **Training**: How to handle the partition function? Contrastive divergence vs. noise contrastive estimation vs. score matching?
-- **Inference speed**: How many Langevin/denoising steps at inference time? Can consistency models achieve single-step inference?
-- **Architecture**: Should the energy function replace the critic, the actor, or both? (Direction A replaces actor; B replaces both.)
-- **Composability**: How do separate energy terms interact? Do they need shared representations or can they be fully independent?
-- **Evaluation**: How to measure multimodality and composability beyond standard RL metrics?
-- **Scaling**: Does the EBM formulation change the scaling properties of the transformer backbone?
+- **Load surrogate**: What load surrogates are available? Do they have useful gradients? If not, can we fit a small neural net surrogate?
+- **Diffusion steps**: How many denoising steps are needed? Fewer = faster but noisier. How does this interact with classifier guidance strength?
+- **Guidance scale**: How sensitive is safety composition to λ? Is there a regime where power drops minimally but loads reduce significantly?
+- **Evaluation**: How to define "OOD distance" between layouts? Turbine count difference? Spacing ratio? Topology change?
+- **Inference speed**: Is K=10-20 denoising steps fast enough for the training loop, or do we need consistency distillation from the start?
