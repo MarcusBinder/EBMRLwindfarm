@@ -113,6 +113,18 @@ class Args:
     alpha: float = 0.2            # Initial entropy coefficient
     autotune: bool = True         # Auto-tune entropy coefficient
 
+    # === Diffusion Actor Settings ===
+    actor_type: str = "gaussian"          # "gaussian" or "diffusion"
+    num_diffusion_steps: int = 20         # DDPM steps for training
+    num_inference_steps: int = 5          # DDIM steps at inference
+    beta_start: float = 0.0001           # Linear beta schedule start
+    beta_end: float = 0.02               # Linear beta schedule end
+    timestep_embed_dim: int = 64         # Sinusoidal timestep embedding dim
+    denoiser_hidden_dim: int = 256       # Hidden dim of denoiser MLP
+    denoiser_num_layers: int = 3         # Number of layers in denoiser MLP
+    diffusion_bc_weight: float = 0.0     # Weight of diffusion BC loss (0 = pure Q-guidance)
+    guidance_scale: float = 0.0          # Classifier guidance lambda at inference (0 = off)
+
     # === Gradient Clipping ===
     grad_clip: bool = True
     grad_clip_max_norm: float = 1.0
