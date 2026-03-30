@@ -197,6 +197,42 @@ class ReluLoadSurrogate(nn.Module):
         return load_per_turbine.sum(dim=(-2, -1), keepdim=False).unsqueeze(-1)
 
 
+class YawThresholdLoadSurrogate(nn.Module):
+    """
+    Load surrogate that penalizes yaw angles exceeding a threshold.
+
+    Penalizes |yaw| > threshold with a quadratic ramp:
+        load_i = relu(|action_i| - threshold)^2
+
+    Actions are in [-1, 1], mapping to [-yaw_max, +yaw_max] degrees.
+    Default threshold of 20° with yaw_max=30° → threshold_normalized = 20/30 ≈ 0.667.
+    """
+
+    def __init__(self, threshold_deg: float = 20.0, yaw_max_deg: float = 30.0):
+        super().__init__()
+        self.threshold = threshold_deg / yaw_max_deg  # Normalize to action space
+
+    def forward(
+        self,
+        action: torch.Tensor,
+        key_padding_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """
+        Args:
+            action: (batch, n_turbines, action_dim) in [-1, 1] action space
+            key_padding_mask: (batch, n_turbines) True = padding
+
+        Returns:
+            (batch, 1) scalar load estimate per batch element
+        """
+        excess = F.relu(action.abs() - self.threshold)
+        load_per_turbine = excess ** 2
+        if key_padding_mask is not None:
+            mask = (~key_padding_mask).unsqueeze(-1).float()
+            load_per_turbine = load_per_turbine * mask
+        return load_per_turbine.sum(dim=(-2, -1), keepdim=False).unsqueeze(-1)
+
+
 # =============================================================================
 # DIFFUSION ACTOR
 # =============================================================================
