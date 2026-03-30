@@ -226,8 +226,9 @@ class PolicyEvaluator:
                 return env
             return _init
         
-        # Use AsyncVectorEnv for parallel execution (faster for expensive sims)
-        envs = gym.vector.AsyncVectorEnv(
+        # Use SyncVectorEnv to avoid deadlocks when CUDA is already initialized
+        # (AsyncVectorEnv uses fork-based multiprocessing which conflicts with CUDA)
+        envs = gym.vector.SyncVectorEnv(
             [make_eval_env_fn(self.seed + i) for i in range(self.num_envs)]
         )
         envs = RecordEpisodeVals(envs)
