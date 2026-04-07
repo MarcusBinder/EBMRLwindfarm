@@ -20,6 +20,7 @@ References:
 
 import json
 import math
+from collections import deque
 from dataclasses import dataclass
 from typing import Optional, Tuple, List, Callable, Union
 
@@ -233,6 +234,216 @@ class YawThresholdLoadSurrogate(nn.Module):
         return load_per_turbine.sum(dim=(-2, -1), keepdim=False).unsqueeze(-1)
 
 
+class ExponentialYawSurrogate(nn.Module):
+    """
+    Exponential wall penalty for yaw angles exceeding a threshold.
+
+    Creates a steep, near-hard-cap at the threshold:
+        penalty_i = exp(k * relu(|action_i| - threshold)) - 1
+
+    Returns per-turbine energies for composition with the EBT actor,
+    or a scalar sum for backward compatibility with the diffusion actor.
+    """
+
+    def __init__(self, threshold_deg: float = 15.0, yaw_max_deg: float = 30.0, steepness: float = 10.0):
+        super().__init__()
+        self.threshold = threshold_deg / yaw_max_deg  # Normalize to action space
+        self.steepness = steepness
+
+    def per_turbine_energy(
+        self,
+        action: torch.Tensor,
+        key_padding_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """
+        Per-turbine exponential penalty.
+
+        Args:
+            action: (batch, n_turbines, action_dim) in [-1, 1] action space
+            key_padding_mask: (batch, n_turbines) True = padding
+
+        Returns:
+            (batch, n_turbines, 1) per-turbine penalty (0 below threshold, steep wall above)
+        """
+        excess = F.relu(action.abs() - self.threshold)
+        penalty = torch.exp(self.steepness * excess) - 1.0
+        if key_padding_mask is not None:
+            mask = (~key_padding_mask).unsqueeze(-1).float()
+            penalty = penalty * mask
+        return penalty
+
+    def forward(
+        self,
+        action: torch.Tensor,
+        key_padding_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Scalar version for backward compat. Returns (batch, 1)."""
+        per_turb = self.per_turbine_energy(action, key_padding_mask)
+        return per_turb.sum(dim=(-2, -1), keepdim=False).unsqueeze(-1)
+
+
+class PerTurbineYawSurrogate(nn.Module):
+    """
+    Exponential wall with per-turbine thresholds.
+
+    Enables heterogeneous constraints: e.g. turbine 1 at ±20° while
+    turbine 3 (worn bearing) is limited to ±5°.
+
+    Args:
+        thresholds_deg: Per-turbine yaw limits in degrees, e.g. [20.0, 20.0, 5.0]
+        yaw_max_deg: Maximum yaw angle (for normalization to [-1, 1] action space)
+        steepness: Exponential wall steepness (higher = harder cap)
+    """
+
+    def __init__(self, thresholds_deg: List[float], yaw_max_deg: float = 30.0,
+                 steepness: float = 10.0):
+        super().__init__()
+        thresholds = torch.tensor(thresholds_deg, dtype=torch.float32) / yaw_max_deg
+        self.register_buffer("thresholds", thresholds)
+        self.steepness = steepness
+
+    def per_turbine_energy(
+        self,
+        action: torch.Tensor,
+        key_padding_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """
+        Per-turbine penalty with heterogeneous thresholds.
+
+        Args:
+            action: (batch, n_turbines, action_dim) in [-1, 1]
+            key_padding_mask: (batch, n_turbines) True = padding
+
+        Returns:
+            (batch, n_turbines, 1) per-turbine penalty
+        """
+        # self.thresholds: (n_turbines,) → (1, n_turbines, 1) for broadcasting
+        thresh = self.thresholds.unsqueeze(0).unsqueeze(-1)
+        excess = F.relu(action.abs() - thresh)
+        penalty = torch.exp(self.steepness * excess) - 1.0
+        if key_padding_mask is not None:
+            mask = (~key_padding_mask).unsqueeze(-1).float()
+            penalty = penalty * mask
+        return penalty
+
+    def forward(
+        self,
+        action: torch.Tensor,
+        key_padding_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Scalar version for diffusion guidance. Returns (batch, 1)."""
+        per_turb = self.per_turbine_energy(action, key_padding_mask)
+        return per_turb.sum(dim=(-2, -1), keepdim=False).unsqueeze(-1)
+
+
+class YawTravelBudgetSurrogate(nn.Module):
+    """
+    Per-turbine yaw travel budget over a rolling window.
+
+    Tracks cumulative |Δyaw| over the last `window_steps` steps per turbine.
+    Penalty ramps exponentially as travel approaches the budget. Does NOT
+    penalize the rate of change — a turbine can move fast to a new optimum,
+    but it can't keep oscillating.
+
+    Usage:
+        surrogate = YawTravelBudgetSurrogate(budget_deg=100, window_steps=100)
+        # At episode start:
+        surrogate.reset()
+        # During episode loop:
+        action = agent.act(..., guidance_fn=surrogate, guidance_scale=1.0)
+        next_obs, reward, ... = env.step(action)
+        surrogate.update(yaw_angles_deg)  # call AFTER env step
+    """
+
+    def __init__(self, budget_deg: float = 100.0, window_steps: int = 100,
+                 yaw_max_deg: float = 30.0, steepness: float = 5.0):
+        super().__init__()
+        self.budget = budget_deg / yaw_max_deg  # in normalized [-1, 1] space
+        self.window_steps = window_steps
+        self.steepness = steepness
+        self.yaw_max_deg = yaw_max_deg
+        # State (managed by reset/update, not nn parameters)
+        self.prev_action: Optional[torch.Tensor] = None
+        self.travel_window: Optional[deque] = None
+        self.cumulative_travel: Optional[torch.Tensor] = None
+
+    def reset(self):
+        """Reset at episode boundaries."""
+        self.prev_action = None
+        self.travel_window = None
+        self.cumulative_travel = None
+
+    def update(self, action_deg: torch.Tensor):
+        """
+        Update travel tracking after an environment step.
+
+        Args:
+            action_deg: (n_turbines,) or (n_turbines, 1) yaw angles in degrees
+        """
+        if action_deg.dim() == 1:
+            action_deg = action_deg.unsqueeze(-1)
+        action_norm = action_deg / self.yaw_max_deg
+
+        if self.prev_action is None:
+            self.prev_action = action_norm.clone()
+            self.travel_window = deque(maxlen=self.window_steps)
+            self.cumulative_travel = torch.zeros_like(action_norm)
+            return
+
+        delta = (action_norm - self.prev_action).abs()
+
+        # Window is at capacity — subtract the oldest before adding new
+        if len(self.travel_window) == self.window_steps:
+            oldest = self.travel_window[0]
+            self.cumulative_travel = self.cumulative_travel - oldest
+
+        self.travel_window.append(delta)
+        self.cumulative_travel = self.cumulative_travel + delta
+        self.prev_action = action_norm.clone()
+
+    def per_turbine_energy(
+        self,
+        action: torch.Tensor,
+        key_padding_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """
+        Per-turbine penalty based on proposed travel vs remaining budget.
+
+        Args:
+            action: (batch, n_turbines, action_dim) in [-1, 1] normalized
+            key_padding_mask: (batch, n_turbines) True = padding
+
+        Returns:
+            (batch, n_turbines, 1) penalty (0 if under budget, steep wall above)
+        """
+        if self.prev_action is None or self.cumulative_travel is None:
+            return torch.zeros_like(action)
+
+        # How much NEW travel would this action add?
+        prev = self.prev_action.unsqueeze(0)  # (1, n_turbines, action_dim)
+        proposed_delta = (action - prev).abs()
+        proposed_total = self.cumulative_travel.unsqueeze(0) + proposed_delta
+
+        # Exponential wall as travel/budget ratio exceeds 1
+        ratio = proposed_total / self.budget
+        excess = F.relu(ratio - 1.0)
+        penalty = torch.exp(self.steepness * excess) - 1.0
+
+        if key_padding_mask is not None:
+            mask = (~key_padding_mask).unsqueeze(-1).float()
+            penalty = penalty * mask
+        return penalty
+
+    def forward(
+        self,
+        action: torch.Tensor,
+        key_padding_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Scalar version for diffusion guidance. Returns (batch, 1)."""
+        per_turb = self.per_turbine_energy(action, key_padding_mask)
+        return per_turb.sum(dim=(-2, -1), keepdim=False).unsqueeze(-1)
+
+
 # =============================================================================
 # DIFFUSION ACTOR
 # =============================================================================
@@ -281,6 +492,8 @@ class TransformerDiffusionActor(nn.Module):
         num_inference_steps: int = 5,
         beta_start: float = 0.0001,
         beta_end: float = 0.02,
+        noise_schedule: str = "linear",
+        cosine_s: float = 0.008,
         timestep_embed_dim: int = 64,
         denoiser_hidden_dim: int = 256,
         denoiser_num_layers: int = 3,
@@ -295,6 +508,7 @@ class TransformerDiffusionActor(nn.Module):
         self.num_diffusion_steps = num_diffusion_steps
         self.num_inference_steps = num_inference_steps
         self.clip_denoised = clip_denoised
+        self.noise_schedule = noise_schedule
 
         self.profile_encoding = profile_encoding
         self.profile_fusion_type = profile_fusion_type
@@ -354,7 +568,10 @@ class TransformerDiffusionActor(nn.Module):
         )
 
         # === Diffusion-specific components ===
-        betas = linear_beta_schedule(num_diffusion_steps, beta_start, beta_end)
+        if noise_schedule == "cosine":
+            betas = cosine_beta_schedule(num_diffusion_steps, s=cosine_s)
+        else:
+            betas = linear_beta_schedule(num_diffusion_steps, beta_start, beta_end)
         self.schedule = DDPMSchedule(betas)
 
         self.denoiser = DenoisingMLP(

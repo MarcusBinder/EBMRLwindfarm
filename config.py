@@ -78,7 +78,7 @@ class Args:
     # === Positional Encoding Settings ===
     # Options: "absolute_mlp", "relative_mlp", "relative_mlp_shared",
     #          "sinusoidal_2d",
-    pos_encoding_type: Optional[str] = None  # Now Optional, use None for no pos encoding
+    pos_encoding_type: Optional[str] = "relative_mlp"  # Relative pos bias in attention. Options: None, "absolute_mlp", "relative_mlp", "relative_mlp_shared", "sinusoidal_2d", etc.
     # For relative encoding: number of hidden units in the bias MLP
     rel_pos_hidden_dim: int = 64
     # For relative encoding: whether to use separate bias per head
@@ -114,9 +114,9 @@ class Args:
     autotune: bool = True         # Auto-tune entropy coefficient
 
     # === Diffusion Actor Settings ===
-    actor_type: str = "gaussian"          # "gaussian" or "diffusion"
+    actor_type: str = "gaussian"          # "gaussian", "diffusion", or "ebt"
     num_diffusion_steps: int = 20         # DDPM steps for training
-    num_inference_steps: int = 5          # DDIM steps at inference
+    num_inference_steps: int = 10         # DDIM steps at inference
     beta_start: float = 0.0001           # Linear beta schedule start
     beta_end: float = 0.02               # Linear beta schedule end
     timestep_embed_dim: int = 64         # Sinusoidal timestep embedding dim
@@ -124,6 +124,39 @@ class Args:
     denoiser_num_layers: int = 3         # Number of layers in denoiser MLP
     diffusion_bc_weight: float = 0.0     # Weight of diffusion BC loss (0 = pure Q-guidance)
     guidance_scale: float = 0.0          # Classifier guidance lambda at inference (0 = off)
+    noise_schedule: str = "linear"        # "linear" or "cosine" beta schedule
+    cosine_schedule_s: float = 0.008      # Cosine schedule offset (only used if noise_schedule="cosine")
+
+    # === BC Weight Annealing ===
+    bc_weight_start: float = 0.0          # Initial BC weight (0 = use fixed diffusion_bc_weight)
+    bc_weight_end: float = 0.0            # Final BC weight after annealing
+    bc_anneal_steps: int = 50000          # Steps over which to anneal BC weight
+    bc_anneal_type: str = "linear"        # "linear" or "cosine" annealing curve
+
+    # === EBT Actor Settings ===
+    ebt_energy_hidden_dim: int = 256      # Hidden dim of energy MLP
+    ebt_energy_num_layers: int = 3        # Number of layers in energy MLP
+    ebt_opt_steps_train: int = 3          # Optimization steps during training (short for stability)
+    ebt_opt_steps_eval: int = 10          # Optimization steps at inference ("think longer")
+    ebt_opt_lr: float = 0.1              # Step size α for energy gradient descent
+    ebt_num_candidates: int = 8           # M candidates for self-verification at inference
+    ebt_langevin_noise: float = 0.01     # Noise scale for Langevin dynamics during training
+    ebt_random_steps: bool = True         # Randomize optimization step count (regularization)
+    ebt_random_lr: bool = True            # Randomize step size (regularization)
+    ebt_energy_reg: float = 0.0           # Energy magnitude regularization weight
+    load_steepness: float = 10.0          # Steepness k for exponential load surrogate wall
+
+    # === Constraint Surrogates ===
+    travel_budget_deg: float = 100.0          # Yaw travel budget per turbine (degrees over window)
+    travel_budget_window: int = 100           # Rolling window size (env steps)
+    travel_budget_steepness: float = 5.0      # Exponential wall steepness for travel budget
+    per_turbine_thresholds: str = ""          # Comma-separated per-turbine yaw limits in degrees (empty = uniform)
+
+    # === Action Regularization (for delta actions) ===
+    action_reg_weight: float = 0.0        # L2 penalty on action magnitude (encourages staying put)
+
+    # === Learning Rate Warmup ===
+    lr_warmup_steps: int = 0              # Linear LR warmup steps (0 = disabled)
 
     # === Gradient Clipping ===
     grad_clip: bool = True
