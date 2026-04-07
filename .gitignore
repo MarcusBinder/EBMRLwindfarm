@@ -19,6 +19,7 @@ logs/
 
 # Generated figures
 /figs
+scripts/wandb_plots/
 
 # Misc
 /trash

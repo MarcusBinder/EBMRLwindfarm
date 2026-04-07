@@ -35,6 +35,7 @@ os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 import gymnasium as gym
 import numpy as np
 import torch
+import math
 import torch.nn.functional as F
 import torch.optim as optim
 import tyro
@@ -48,7 +49,10 @@ from WindGym.wrappers import RecordEpisodeVals, PerTurbineObservationWrapper
 from config import Args
 from replay_buffer import TransformerReplayBuffer
 from networks import TransformerCritic, create_profile_encoding
-from diffusion import TransformerDiffusionActor, YawThresholdLoadSurrogate
+from diffusion import (
+    TransformerDiffusionActor, YawThresholdLoadSurrogate,
+    PerTurbineYawSurrogate, YawTravelBudgetSurrogate,
+)
 from helpers.agent import WindFarmAgent
 from helpers.eval_utils import PolicyEvaluator
 from helpers.multi_layout_env import MultiLayoutEnv, LayoutConfig
@@ -324,6 +328,8 @@ def main():
         num_inference_steps=args.num_inference_steps,
         beta_start=args.beta_start,
         beta_end=args.beta_end,
+        noise_schedule=args.noise_schedule,
+        cosine_s=args.cosine_schedule_s,
         timestep_embed_dim=args.timestep_embed_dim,
         denoiser_hidden_dim=args.denoiser_hidden_dim,
         denoiser_num_layers=args.denoiser_num_layers,
@@ -370,6 +376,16 @@ def main():
         lr=args.policy_lr,
     )
 
+    # LR warmup schedulers
+    if args.lr_warmup_steps > 0:
+        def warmup_fn(step):
+            return min(1.0, step / args.lr_warmup_steps)
+        actor_scheduler = optim.lr_scheduler.LambdaLR(actor_optimizer, warmup_fn)
+        q_scheduler = optim.lr_scheduler.LambdaLR(q_optimizer, warmup_fn)
+    else:
+        actor_scheduler = None
+        q_scheduler = None
+
     # Evaluator
     evaluator = PolicyEvaluator(
         agent=agent,
@@ -390,9 +406,20 @@ def main():
         profile_source=args.profile_source,
     )
 
-    # Load surrogate for post-training guidance sweep
-    # Penalizes |yaw| > 20° (quadratic ramp beyond threshold)
-    load_surrogate = YawThresholdLoadSurrogate(threshold_deg=20.0, yaw_max_deg=30.0)
+    # Load surrogates for post-training guidance sweep
+    if args.per_turbine_thresholds:
+        thresholds = [float(x) for x in args.per_turbine_thresholds.split(",")]
+        load_surrogate = PerTurbineYawSurrogate(thresholds, yaw_max_deg=30.0, steepness=args.load_steepness)
+        print(f"Per-turbine yaw limits: {thresholds}°")
+    else:
+        load_surrogate = YawThresholdLoadSurrogate(threshold_deg=20.0, yaw_max_deg=30.0)
+
+    travel_surrogate = YawTravelBudgetSurrogate(
+        budget_deg=args.travel_budget_deg,
+        window_steps=args.travel_budget_window,
+        yaw_max_deg=30.0,
+        steepness=args.travel_budget_steepness,
+    )
 
     print(f"Actor params: {sum(p.numel() for p in actor.parameters()):,}")
     print(f"Critic params: {sum(p.numel() for p in qf1.parameters()):,} (x2)")
@@ -583,6 +610,8 @@ def main():
                         max_norm=args.grad_clip_max_norm,
                     )
                 q_optimizer.step()
+                if q_scheduler is not None:
+                    q_scheduler.step()
 
                 total_gradient_steps += 1
                 loss_accumulator['qf1_loss'].append(qf1_loss.item())
@@ -619,8 +648,24 @@ def main():
                     # Actor loss: maximize Q (no entropy term for diffusion)
                     actor_loss = -min_qf_pi.mean()
 
-                    # Optional BC regularization
-                    if args.diffusion_bc_weight > 0:
+                    # Action regularization: penalize non-zero delta actions
+                    if args.action_reg_weight > 0:
+                        action_reg = (actions_pi ** 2).mean()
+                        actor_loss = actor_loss + args.action_reg_weight * action_reg
+
+                    # BC regularization with optional annealing
+                    if args.bc_weight_start > 0:
+                        progress = min(1.0, global_step / max(1, args.bc_anneal_steps))
+                        if args.bc_anneal_type == "cosine":
+                            bc_weight = args.bc_weight_end + 0.5 * (args.bc_weight_start - args.bc_weight_end) * (1 + math.cos(math.pi * progress))
+                        else:
+                            bc_weight = args.bc_weight_start + (args.bc_weight_end - args.bc_weight_start) * progress
+                    elif args.diffusion_bc_weight > 0:
+                        bc_weight = args.diffusion_bc_weight
+                    else:
+                        bc_weight = 0.0
+
+                    if bc_weight > 0:
                         batch_size_cur = data["actions"].shape[0]
                         t = torch.randint(0, args.num_diffusion_steps, (batch_size_cur,), device=device)
                         noise = torch.randn_like(data["actions"])
@@ -628,7 +673,7 @@ def main():
                         noisy_actions = actor.q_sample(actions_norm, t, noise)
                         eps_pred = actor.predict_noise(turbine_emb.detach(), noisy_actions, t, batch_mask)
                         bc_loss = F.mse_loss(eps_pred, noise)
-                        actor_loss = actor_loss + args.diffusion_bc_weight * bc_loss
+                        actor_loss = actor_loss + bc_weight * bc_loss
 
                     actor_optimizer.zero_grad(set_to_none=True)
                     actor_loss.backward()
@@ -637,13 +682,18 @@ def main():
                             actor.parameters(), max_norm=args.grad_clip_max_norm,
                         )
                     actor_optimizer.step()
+                    if actor_scheduler is not None:
+                        actor_scheduler.step()
 
                     loss_accumulator['actor_loss'].append(actor_loss.item())
                     loss_accumulator['q_pi'].append(min_qf_pi.mean().item())
                     loss_accumulator['action_mean'].append(actions_pi_scaled.mean().item())
                     loss_accumulator['action_std'].append(actions_pi_scaled.std().item())
-                    if args.diffusion_bc_weight > 0:
+                    if bc_weight > 0:
                         loss_accumulator['bc_loss'].append(bc_loss.item())
+                        loss_accumulator['bc_weight'].append(bc_weight)
+                    if args.action_reg_weight > 0:
+                        loss_accumulator['action_reg'].append(action_reg.item())
 
                 # Target network update
                 if total_gradient_steps % args.target_network_frequency == 0:
@@ -677,6 +727,12 @@ def main():
                 if loss_accumulator['bc_loss']:
                     writer.add_scalar("losses/bc_loss",
                                       np.mean(loss_accumulator['bc_loss']), global_step)
+                if loss_accumulator['bc_weight']:
+                    writer.add_scalar("debug/bc_weight",
+                                      np.mean(loss_accumulator['bc_weight']), global_step)
+                if loss_accumulator['action_reg']:
+                    writer.add_scalar("losses/action_reg",
+                                      np.mean(loss_accumulator['action_reg']), global_step)
                 # Yaw statistics (from env state, in physical degrees)
                 if loss_accumulator['yaw_abs_mean_deg']:
                     writer.add_scalar("yaw/abs_mean_deg", np.mean(loss_accumulator['yaw_abs_mean_deg']), global_step)
