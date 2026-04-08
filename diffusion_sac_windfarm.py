@@ -49,10 +49,8 @@ from WindGym.wrappers import RecordEpisodeVals, PerTurbineObservationWrapper
 from config import Args
 from replay_buffer import TransformerReplayBuffer
 from networks import TransformerCritic, create_profile_encoding
-from diffusion import (
-    TransformerDiffusionActor, YawThresholdLoadSurrogate,
-    PerTurbineYawSurrogate, YawTravelBudgetSurrogate,
-)
+from diffusion import TransformerDiffusionActor
+from load_surrogates import create_load_surrogate, YawTravelBudgetSurrogate
 from helpers.agent import WindFarmAgent
 from helpers.eval_utils import PolicyEvaluator
 from helpers.multi_layout_env import MultiLayoutEnv, LayoutConfig
@@ -407,12 +405,12 @@ def main():
     )
 
     # Load surrogates for post-training guidance sweep
-    if args.per_turbine_thresholds:
-        thresholds = [float(x) for x in args.per_turbine_thresholds.split(",")]
-        load_surrogate = PerTurbineYawSurrogate(thresholds, yaw_max_deg=30.0, steepness=args.load_steepness)
-        print(f"Per-turbine yaw limits: {thresholds}°")
-    else:
-        load_surrogate = YawThresholdLoadSurrogate(threshold_deg=20.0, yaw_max_deg=30.0)
+    load_surrogate = create_load_surrogate(
+        args.load_surrogate_type,
+        steepness=args.load_steepness,
+        per_turbine_thresholds=args.per_turbine_thresholds,
+    )
+    print(f"Load surrogate: {args.load_surrogate_type} → {type(load_surrogate).__name__}")
 
     travel_surrogate = YawTravelBudgetSurrogate(
         budget_deg=args.travel_budget_deg,

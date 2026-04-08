@@ -27,8 +27,8 @@ import numpy as np
 import torch
 
 from config import Args
-from diffusion import (
-    TransformerDiffusionActor,
+from diffusion import TransformerDiffusionActor
+from load_surrogates import (
     ExponentialYawSurrogate,
     PerTurbineYawSurrogate,
     YawTravelBudgetSurrogate,

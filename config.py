@@ -150,7 +150,8 @@ class Args:
     travel_budget_deg: float = 100.0          # Yaw travel budget per turbine (degrees over window)
     travel_budget_window: int = 100           # Rolling window size (env steps)
     travel_budget_steepness: float = 5.0      # Exponential wall steepness for travel budget
-    per_turbine_thresholds: str = ""          # Comma-separated per-turbine yaw limits in degrees (empty = uniform)
+    per_turbine_thresholds: str = ""          # Comma-separated per-turbine yaw limits in degrees (for per_turbine surrogate)
+    load_surrogate_type: str = "exponential"  # Load surrogate type (exponential, threshold, per_turbine, t1_positive_only, relu)
 
     # === Action Regularization (for delta actions) ===
     action_reg_weight: float = 0.0        # L2 penalty on action magnitude (encourages staying put)
