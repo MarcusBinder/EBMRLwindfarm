@@ -52,7 +52,10 @@ from networks import TransformerCritic, create_profile_encoding
 from ebt import TransformerEBTActor
 from load_surrogates import create_load_surrogate, YawTravelBudgetSurrogate
 from helpers.agent import WindFarmAgent
-from helpers.constraint_viz import plot_energy_landscape, plot_yaw_vs_lambda, plot_power_vs_lambda
+from helpers.constraint_viz import (
+    plot_yaw_trajectory, plot_local_energy_landscape,
+    plot_yaw_vs_lambda, plot_power_vs_lambda,
+)
 import matplotlib.pyplot as plt
 from helpers.eval_utils import PolicyEvaluator
 from helpers.multi_layout_env import MultiLayoutEnv, LayoutConfig
@@ -791,17 +794,32 @@ def main():
             if args.viz_every_n_evals > 0 and global_step % (args.eval_interval * args.viz_every_n_evals) < args.eval_interval:
                 print(f"  Generating visualization figures...")
                 viz_lambdas = [0.0, 1.0, 5.0, 10.0, 20.0]
-                viz_batch = agent.batch_preparer.from_envs(assessment_env, ep_obs)
 
-                fig_land = plot_energy_landscape(
+                fig_traj = plot_yaw_trajectory(
+                    agent, assessment_env, load_surrogate,
+                    viz_lambdas, guided_steps, device,
+                )
+                writer.add_figure("viz/yaw_trajectory", fig_traj, global_step)
+                plt.close(fig_traj)
+
+                # Local energy landscape (EBT only)
+                viz_obs, _ = assessment_env.reset()
+                viz_batch = agent.batch_preparer.from_envs(assessment_env, viz_obs)
+                # Get current action as center for local landscape
+                with torch.no_grad():
+                    current_act = agent.act(assessment_env, viz_obs)
+                current_act_t = torch.tensor(
+                    current_act, device=device, dtype=torch.float32
+                ).unsqueeze(-1)[:1]  # (1, n_turb, 1)
+                fig_local = plot_local_energy_landscape(
                     actor, viz_batch.obs, viz_batch.positions, viz_batch.mask,
-                    load_surrogate, 1.0,
+                    load_surrogate, 5.0, current_act_t,
                     recep_profile=viz_batch.receptivity,
                     influence_profile=viz_batch.influence,
                 )
-                if fig_land is not None:
-                    writer.add_figure("viz/energy_landscape", fig_land, global_step)
-                    plt.close(fig_land)
+                if fig_local is not None:
+                    writer.add_figure("viz/local_energy", fig_local, global_step)
+                    plt.close(fig_local)
 
                 fig_yaw = plot_yaw_vs_lambda(
                     agent, assessment_env, load_surrogate,

@@ -52,7 +52,7 @@ from networks import TransformerCritic, create_profile_encoding
 from diffusion import TransformerDiffusionActor
 from load_surrogates import create_load_surrogate, YawTravelBudgetSurrogate
 from helpers.agent import WindFarmAgent
-from helpers.constraint_viz import plot_yaw_vs_lambda, plot_power_vs_lambda
+from helpers.constraint_viz import plot_yaw_trajectory, plot_yaw_vs_lambda, plot_power_vs_lambda
 import matplotlib.pyplot as plt
 from helpers.eval_utils import PolicyEvaluator
 from helpers.multi_layout_env import MultiLayoutEnv, LayoutConfig
@@ -840,6 +840,13 @@ def main():
             if args.viz_every_n_evals > 0 and global_step % (args.eval_interval * args.viz_every_n_evals) < args.eval_interval:
                 print(f"  Generating visualization figures...")
                 viz_lambdas = [0.0, 1.0, 5.0, 10.0, 20.0]
+
+                fig_traj = plot_yaw_trajectory(
+                    agent, eval_env, load_surrogate,
+                    viz_lambdas, guided_eval_steps, device,
+                )
+                writer.add_figure("viz/yaw_trajectory", fig_traj, global_step)
+                plt.close(fig_traj)
 
                 fig_yaw = plot_yaw_vs_lambda(
                     agent, eval_env, load_surrogate,

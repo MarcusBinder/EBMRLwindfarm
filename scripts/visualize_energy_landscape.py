@@ -26,8 +26,8 @@ from config import Args
 from load_surrogates import create_load_surrogate
 from helpers.agent import WindFarmAgent
 from helpers.constraint_viz import (
-    plot_energy_landscape,
-    plot_optimization_trajectories,
+    plot_yaw_trajectory,
+    plot_local_energy_landscape,
     plot_yaw_vs_lambda,
     plot_power_vs_lambda,
 )
@@ -155,43 +155,42 @@ def main():
     lambdas = [0.0, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0]
     figures = {}
 
-    # Panel 1-2: Energy landscape (EBT only)
-    print("Generating energy landscape...")
-    fig = plot_energy_landscape(
-        actor, batch.obs, batch.positions, batch.mask,
-        surrogate, cli.lambda_val,
-        recep_profile=batch.receptivity, influence_profile=batch.influence,
-        grid_res=cli.grid_res,
+    # 1) Yaw trajectory over time
+    print("Generating yaw trajectory...")
+    figures["yaw_trajectory"] = plot_yaw_trajectory(
+        agent, envs, surrogate, [0.0, 1.0, 5.0, 10.0],
+        cli.eval_steps, device,
     )
-    if fig is not None:
-        figures["energy_landscape"] = fig
-        print("  Done.")
-    else:
-        print("  Skipped (diffusion actor, no energy function).")
+    print("  Done.")
 
-    # Panel 3: Optimization trajectories (EBT only)
-    print("Generating optimization trajectories...")
-    fig = plot_optimization_trajectories(
+    # 2) Local energy landscape (EBT only)
+    print("Generating local energy landscape...")
+    # Get current action as center
+    with torch.no_grad():
+        current_act = agent.act(envs, obs)
+    current_act_t = torch.tensor(
+        current_act, device=device, dtype=torch.float32
+    ).unsqueeze(-1)[:1]  # (1, n_turb, 1)
+    fig = plot_local_energy_landscape(
         actor, batch.obs, batch.positions, batch.mask,
-        surrogate, cli.lambda_val,
-        num_candidates=cli.num_candidates, num_steps=cli.opt_steps,
+        surrogate, cli.lambda_val, current_act_t,
         recep_profile=batch.receptivity, influence_profile=batch.influence,
         grid_res=cli.grid_res,
     )
     if fig is not None:
-        figures["optimization_trajectories"] = fig
+        figures["local_energy"] = fig
         print("  Done.")
     else:
         print("  Skipped (diffusion actor).")
 
-    # Panel 4: Yaw vs lambda
+    # 3) Yaw vs lambda
     print("Generating yaw vs lambda...")
     figures["yaw_vs_lambda"] = plot_yaw_vs_lambda(
         agent, envs, surrogate, lambdas, cli.eval_steps, device,
     )
     print("  Done.")
 
-    # Panel 5: Power vs lambda
+    # 4) Power vs lambda
     print("Generating power vs lambda...")
     figures["power_vs_lambda"] = plot_power_vs_lambda(
         agent, envs, surrogate, lambdas, cli.eval_steps, device,
