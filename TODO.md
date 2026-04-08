@@ -41,7 +41,12 @@
   - [ ] Composed constraint (ours — load surrogate as guidance, no retraining)
   - [ ] Retrained constrained SAC (Lagrangian, retrained per constraint level)
   - [ ] Post-hoc action clipping (naive baseline)
-- [ ] Test per-turbine constraint scenario: constrain T1 → show different optimum emerges
+- [ ] **Multi-modal validation (current focus):**
+  - [ ] Train diffusion-SAC on multi_modal layout
+  - [ ] Train EBT-SAC on multi_modal layout
+  - [ ] Evaluate unconstrained → expect yaws near [-16°, -17.3°, 0°]
+  - [ ] Evaluate with t1_positive_only constraint → expect yaws near [22.7°, -9.3°, 0°]
+  - [ ] Confirm both actors find the qualitatively different constrained optimum
 - [ ] Test travel budget: show agent converges then holds steady
 - [ ] Visualize: energy landscape with and without load guidance
 
