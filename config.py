@@ -30,7 +30,7 @@ class Args:
 
     # === Receptivity Profile Settings ===
     profile_encoder_kwargs: str = "{}"  # JSON string of encoder-specific kwargs
-    profile_source: str = "PyWake"  # "pywake" or "geometric"
+    profile_source: str = "geometric"  # "pywake" or "geometric"
     profile_encoding_type: Optional[str] = None  # Now Optional, use None for no pos encoding
     profile_encoder_hidden: int = 128       # Hidden dim in profile encoder MLP
     rotate_profiles: bool = True            # Rotate profiles to wind-relative frame
@@ -42,9 +42,9 @@ class Args:
     # === Environment Settings ===
     turbtype: str = "DTU10MW"  # Wind turbine type
     TI_type: str = "Random"   # Turbulence intensity sampling
-    dt_sim: int = 5           # Simulation timestep (seconds)
-    dt_env: int = 10          # Environment timestep (seconds)
-    yaw_step: float = 5.0     # Max yaw change per sim step (degrees)
+    dt_sim: int = 1           # Simulation timestep (seconds)
+    dt_env: int = 1          # Environment timestep (seconds)
+    yaw_step: float = 0.5     # Max yaw change per sim step (degrees)
     max_eps: int = 20         # Number of flow passthroughs per episode
     num_envs: int = 1         # Number of parallel environments
 
@@ -178,4 +178,4 @@ class Args:
     pretrain_freeze_steps: int = 0             # Freeze encoder for this many env steps (0 = no freeze)
 
     # === Action Settings ===
-    action_type: str = "wind"   # "wind" (target setpoint) or "yaw" (delta). Overridden by BC checkpoint if provided.
+    action_type: str = "yaw"   # "wind" (target setpoint) or "yaw" (delta). Overridden by BC checkpoint if provided.

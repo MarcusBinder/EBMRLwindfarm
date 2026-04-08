@@ -1,5 +1,8 @@
 # TODO — EBM + RL + Transformers
 
+## BASIC STUFF
+- [ ] Make it work with NO load surrogate
+
 ## Literature (reference, not blocking)
 - [ ] Read Soft Q-Learning paper (Haarnoja 2017) — the SAC→EBM connection
 - [ ] Read Diffusion-QL paper (Wang et al. 2022) — diffusion actor in actor-critic framework
