@@ -782,12 +782,13 @@ def main():
             actor.eval()
             eval_env = evaluator.eval_envs  # Reuse the eval env created above
             guided_eval_steps = min(50, args.num_eval_steps)
-            for lam in [0.0, 0.5, 1.0]:
+            for lam in [0.0, 1.0, 5.0, 10.0]:
                 gfn = load_surrogate if lam > 0 else None
                 ep_obs, _ = eval_env.reset()
                 ep_reward = 0.0
                 ep_load = 0.0
                 ep_yaw_abs = []
+                ep_yaw_per_turbine: list[list[float]] = [[] for _ in range(n_turbines_max)]
                 ep_power = []
 
                 for _ in range(guided_eval_steps):
@@ -799,6 +800,10 @@ def main():
                     if "yaw angles agent" in ep_info:
                         yaw = np.array(ep_info["yaw angles agent"])
                         ep_yaw_abs.append(np.abs(yaw).mean())
+                        # Per-turbine yaw (mean across envs)
+                        yaw_flat = yaw[0] if yaw.ndim > 1 else yaw
+                        for t in range(min(len(yaw_flat), n_turbines_max)):
+                            ep_yaw_per_turbine[t].append(float(yaw_flat[t]))
                     if "Power agent" in ep_info:
                         ep_power.append(float(np.mean(ep_info["Power agent"])))
                     if gfn is not None:
@@ -808,16 +813,24 @@ def main():
                         ep_load += gfn(act_t, mask_t).mean().item()
 
                 lam_str = f"{lam:.1f}".replace(".", "_")
-                prefix = f"eval_guidance_{lam_str}"
+                prefix = f"guidance_{lam_str}"
                 writer.add_scalar(f"{prefix}/mean_reward", ep_reward, global_step)
                 writer.add_scalar(f"{prefix}/mean_load", ep_load, global_step)
                 if ep_yaw_abs:
                     writer.add_scalar(f"{prefix}/mean_abs_yaw_deg", np.mean(ep_yaw_abs), global_step)
                 if ep_power:
                     writer.add_scalar(f"{prefix}/mean_power", np.mean(ep_power), global_step)
+                # Per-turbine yaw angles
+                turb_yaw_strs = []
+                for t in range(n_turbines_max):
+                    if ep_yaw_per_turbine[t]:
+                        mean_yaw_t = np.mean(ep_yaw_per_turbine[t])
+                        writer.add_scalar(f"{prefix}/turbine_{t}_yaw_deg", mean_yaw_t, global_step)
+                        turb_yaw_strs.append(f"T{t}={mean_yaw_t:.1f}")
 
                 yaw_str = f", AbsYaw={np.mean(ep_yaw_abs):.1f}deg" if ep_yaw_abs else ""
-                print(f"  [lambda={lam}] Reward={ep_reward:.2f}, Load={ep_load:.2f}{yaw_str}")
+                turb_str = f" [{', '.join(turb_yaw_strs)}]" if turb_yaw_strs else ""
+                print(f"  [lambda={lam}] Reward={ep_reward:.2f}, Load={ep_load:.2f}{yaw_str}{turb_str}")
 
             actor.train()
             print(f"  Eval complete.")
@@ -837,25 +850,35 @@ def main():
     print("\n=== Final Guidance Scale Sweep ===")
     actor.eval()
     eval_env = evaluator.eval_envs
-    for lam in [0.0, 0.1, 0.5, 1.0, 2.0]:
+    for lam in [0.0, 1.0, 5.0, 10.0, 20.0]:
         gfn = load_surrogate if lam > 0 else None
         test_obs, _ = eval_env.reset()
         ep_reward, ep_load = 0.0, 0.0
         ep_yaw_abs = []
+        ep_yaw_per_turb: list[list[float]] = [[] for _ in range(n_turbines_max)]
         for _ in range(min(50, args.num_eval_steps)):
             with torch.no_grad():
                 act = agent.act(eval_env, test_obs, guidance_fn=gfn, guidance_scale=lam)
             test_obs, rew, _, _, info = eval_env.step(act)
             ep_reward += float(rew.mean())
             if "yaw angles agent" in info:
-                ep_yaw_abs.append(float(np.abs(np.array(info["yaw angles agent"])).mean()))
+                yaw_arr = np.array(info["yaw angles agent"])
+                ep_yaw_abs.append(float(np.abs(yaw_arr).mean()))
+                yaw_flat = yaw_arr[0] if yaw_arr.ndim > 1 else yaw_arr
+                for t in range(min(len(yaw_flat), n_turbines_max)):
+                    ep_yaw_per_turb[t].append(float(yaw_flat[t]))
             if gfn is not None:
                 act_t = torch.tensor(act, device=device, dtype=torch.float32).unsqueeze(-1)
                 mask_t = torch.tensor(
                     get_env_attention_masks(eval_env), device=device, dtype=torch.bool)
                 ep_load += gfn(act_t, mask_t).mean().item()
         yaw_str = f", AbsYaw={np.mean(ep_yaw_abs):.1f}deg" if ep_yaw_abs else ""
-        print(f"  lambda={lam}: Reward={ep_reward:.2f}, Load={ep_load:.2f}{yaw_str}")
+        turb_strs = []
+        for t in range(n_turbines_max):
+            if ep_yaw_per_turb[t]:
+                turb_strs.append(f"T{t}={np.mean(ep_yaw_per_turb[t]):.1f}")
+        turb_str = f" [{', '.join(turb_strs)}]" if turb_strs else ""
+        print(f"  lambda={lam}: Reward={ep_reward:.2f}, Load={ep_load:.2f}{yaw_str}{turb_str}")
 
     writer.close()
     envs.close()
