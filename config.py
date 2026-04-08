@@ -52,6 +52,7 @@ class Args:
     eval_interval: int = 50000        # How often to evaluate (in env steps)
     eval_initial: bool = False        # Run evaluation before training starts
     num_eval_steps: int = 200         # Number of steps per evaluation episode
+    viz_every_n_evals: int = 5        # Log visualization figures every N evaluations (0 = disabled)
     num_eval_episodes: int = 1        # Number of episodes per evaluation
     eval_layouts: str = ""            # Comma-separated eval layouts (empty = use training layouts)
     eval_seed: int = 42               # Seed for evaluation environments

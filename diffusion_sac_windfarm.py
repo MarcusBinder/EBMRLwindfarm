@@ -52,6 +52,8 @@ from networks import TransformerCritic, create_profile_encoding
 from diffusion import TransformerDiffusionActor
 from load_surrogates import create_load_surrogate, YawTravelBudgetSurrogate
 from helpers.agent import WindFarmAgent
+from helpers.constraint_viz import plot_yaw_vs_lambda, plot_power_vs_lambda
+import matplotlib.pyplot as plt
 from helpers.eval_utils import PolicyEvaluator
 from helpers.multi_layout_env import MultiLayoutEnv, LayoutConfig
 from helpers.multi_layout_debug import create_debug_logger
@@ -831,6 +833,26 @@ def main():
                 yaw_str = f", AbsYaw={np.mean(ep_yaw_abs):.1f}deg" if ep_yaw_abs else ""
                 turb_str = f" [{', '.join(turb_yaw_strs)}]" if turb_yaw_strs else ""
                 print(f"  [lambda={lam}] Reward={ep_reward:.2f}, Load={ep_load:.2f}{yaw_str}{turb_str}")
+
+            # --- Visualization figures (every Nth eval) ---
+            if args.viz_every_n_evals > 0 and global_step % (args.eval_interval * args.viz_every_n_evals) < args.eval_interval:
+                print(f"  Generating visualization figures...")
+                viz_lambdas = [0.0, 1.0, 5.0, 10.0, 20.0]
+
+                fig_yaw = plot_yaw_vs_lambda(
+                    agent, eval_env, load_surrogate,
+                    viz_lambdas, guided_eval_steps, device,
+                )
+                writer.add_figure("viz/yaw_vs_lambda", fig_yaw, global_step)
+                plt.close(fig_yaw)
+
+                fig_pow = plot_power_vs_lambda(
+                    agent, eval_env, load_surrogate,
+                    viz_lambdas, guided_eval_steps, device,
+                )
+                writer.add_figure("viz/power_vs_lambda", fig_pow, global_step)
+                plt.close(fig_pow)
+                print(f"  Visualizations logged.")
 
             actor.train()
             print(f"  Eval complete.")
